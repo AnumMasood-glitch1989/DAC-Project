@@ -24,22 +24,23 @@
 5. System Architecture (Block Flow Diagram)
 6. Module 1 — Packed-Column NaOH Absorber Model
 7. Module 2 — Electrochemical Cell (EC) Model
-8. Module 3 — Integrated DAC System
-9. Results — Absorber Column Performance
-10. Results — Absorber Sensitivity Analysis
-11. Results — Absorber Optimization
-12. Results — Model Validation
-13. Results — Electrochemical Cell Base Case
-14. Results — EC Cell Sensitivity Analysis
-15. Results — Integrated System Performance
-16. Techno-Economic Analysis — CAPEX
-17. Techno-Economic Analysis — OPEX & Revenue
-18. Techno-Economic Analysis — Scale-Up Pathway
-19. Discussion & Key Findings
-20. Conclusions
-21. Future Work
-22. References
-23. Q&A
+8. Module 3 — Surrogate Absorber Model
+9. Module 3 (cont.) — Surrogate Model: System Integration & Data Flow
+10. Results — Absorber Column Performance
+11. Results — Absorber Sensitivity Analysis
+12. Results — Absorber Optimization
+13. Results — Model Validation
+14. Results — Electrochemical Cell Base Case
+15. Results — EC Cell Sensitivity Analysis
+16. Results — Integrated System Performance
+17. Techno-Economic Analysis — CAPEX
+18. Techno-Economic Analysis — OPEX & Revenue
+19. Techno-Economic Analysis — Scale-Up Pathway
+20. Discussion & Key Findings
+21. Conclusions
+22. Future Work
+23. References
+24. Q&A
 
 ---
 
@@ -104,27 +105,28 @@
 ## SLIDE 6 — Methodology Overview
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    METHODOLOGY FRAMEWORK                      │
-├──────────────────────────────────────────────────────────────┤
-│                                                               │
-│   ┌─────────────┐     ┌─────────────┐     ┌──────────────┐  │
-│   │  ABSORBER    │     │  EC CELL     │     │   TECHNO-    │  │
-│   │  MODEL       │────▶│  MODEL       │────▶│   ECONOMIC   │  │
-│   │  (Steady-    │     │  (Dynamic    │     │   ANALYSIS   │  │
-│   │   State BVP) │     │   ODE/IVP)   │     │  (CAPEX/OPEX)│  │
-│   └──────┬──────┘     └──────┬──────┘     └──────────────┘  │
-│          │                    │                                │
-│   ┌──────▼──────┐     ┌──────▼──────┐                        │
-│   │ SENSITIVITY  │     │ SENSITIVITY  │                        │
-│   │ & OPTIM.     │     │ ANALYSIS     │                        │
-│   └──────┬──────┘     └─────────────┘                        │
-│          │                                                    │
-│   ┌──────▼──────┐                                            │
-│   │ VALIDATION   │                                            │
-│   │ (7 Tests)    │                                            │
-│   └─────────────┘                                            │
-└──────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                          METHODOLOGY FRAMEWORK                                │
+├───────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│   ┌─────────────┐     ┌──────────────┐     ┌─────────────┐    ┌───────────┐ │
+│   │  ABSORBER    │     │  SURROGATE   │     │  EC CELL     │    │  TECHNO-  │ │
+│   │  MODEL       │────▶│  ABSORBER    │────▶│  MODEL       │───▶│  ECONOMIC │ │
+│   │  (Steady-    │     │  MODEL       │     │  (Dynamic    │    │  ANALYSIS │ │
+│   │   State BVP) │     │ (Batch Cycle │     │   ODE/IVP)   │    │(CAPEX/OPEX│ │
+│   │              │     │  Reactor)    │     │              │    │           │ │
+│   └──────┬──────┘     └──────┬───────┘     └──────┬──────┘    └───────────┘ │
+│          │                   │                     │                          │
+│   ┌──────▼──────┐     Provides to EC Cell:  ┌──────▼──────┐                  │
+│   │ SENSITIVITY  │     • c_Na₂CO₃ feed      │ SENSITIVITY  │                  │
+│   │ & OPTIM.     │     • c_NaOH residual    │ ANALYSIS     │                  │
+│   └──────┬──────┘     • Cycle time          └─────────────┘                  │
+│          │            • CO₂ captured                                          │
+│   ┌──────▼──────┐                                                            │
+│   │ VALIDATION   │                                                            │
+│   │ (7 Tests)    │                                                            │
+│   └─────────────┘                                                            │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Tools:** Python 3.x, NumPy, SciPy, Matplotlib  
@@ -316,7 +318,169 @@ $$j = F \cdot (J_{\text{Na}^+} + J_{\text{H}^+})$$
 
 ---
 
-## SLIDE 12 — Results: Absorber Base Case
+## SLIDE 12 — Module 3: Surrogate Absorber Model
+
+### Why a Surrogate Model?
+
+The full 1D packed-column absorber solves a boundary-value problem (BVP) with mass-transfer correlations — it is rigorous but computationally expensive. The electrochemical cell model requires:
+- **Feed concentrations** (Na₂CO₃ and residual NaOH entering the acid tank)
+- **Cycle time** (how long the absorber runs before the solution is spent)
+
+> A **surrogate absorber model** was developed to efficiently provide these quantities. It replaces the 1D spatial BVP with a **well-mixed batch reactor model** that tracks NaOH depletion over thousands of gas–liquid contact passes.
+
+### Model Architecture: `AbsorberCase1` Class
+
+| Feature | Full 1D BVP Absorber | Surrogate Batch Model |
+|---------|---------------------|-----------------------|
+| Spatial resolution | Height z ∈ [0, Z] | Well-mixed (no spatial dimension) |
+| Solver | BVP shooting (Brent's method) | Sequential pass-by-pass loop |
+| Time scale | Single steady-state snapshot | Full batch cycle (hundreds of hours) |
+| Computation time | Seconds–minutes per case | Milliseconds per full cycle |
+| Output | η, STY, profiles along z | c_NaOH(t), c_Na₂CO₃(t), t_cycle |
+
+### Constructor Parameters
+
+| Parameter | Symbol | Default | Unit | Description |
+|-----------|--------|---------|------|-------------|
+| Tank volume | V | 200 | L | Batch tank volume |
+| Initial NaOH | c₀ | 2.0 | mol/L | Fresh NaOH concentration |
+| NaOH threshold | c_thresh | 0.10 | mol/L | Stop when NaOH drops below this |
+| Na₂CO₃ saturation | c_max | 0.95 | mol/L | Stop when Na₂CO₃ reaches this |
+| Gas flow rate | Q | 40.0 | L/min | Volumetric gas flow |
+
+### Core Physical Chemistry
+
+**Reaction stoichiometry:**
+
+$$\text{CO}_2 + 2\,\text{NaOH} \longrightarrow \text{Na}_2\text{CO}_3 + \text{H}_2\text{O}$$
+
+For every mole of CO₂ absorbed: 2 moles of NaOH consumed, 1 mole of Na₂CO₃ formed.
+
+**Reactive mass-transfer enhancement (Hatta number):**
+
+$$Ha = \frac{\sqrt{k_{\text{OH}} \cdot c_{\text{OH}^-} \cdot D_{\text{CO}_2}}}{k_L}$$
+
+The surrogate uses the same Hatta-number formulation as the full absorber to scale the CO₂ uptake rate with changing NaOH concentration.
+
+**Key empirical coefficients (derived from the full absorber model):**
+
+| Coefficient | Value | Description |
+|-------------|-------|-------------|
+| dDIC_ref | 0.000254 mol/L | Reference DIC uptake per pass at 2 M NaOH |
+| c_OH_ref | 2.0 mol/L | Reference NaOH concentration |
+| k_OH | 8,051 s⁻¹ | Reaction rate constant |
+| k_L | 11.30 × 10⁻⁵ m/s | Liquid-film mass transfer coefficient |
+| D_CO₂ | 1.91 × 10⁻⁹ m²/s | CO₂ diffusivity in solution |
+| gf | 0.902 | Gas-film resistance fraction |
+
+**DIC uptake per pass (Hatta-corrected):**
+
+At each pass, the CO₂ uptake adjusts based on current NaOH concentration:
+
+$$Ha(c) = Ha_{\text{ref}} \cdot \sqrt{\frac{c}{c_{\text{OH,ref}}}}$$
+
+$$\Delta\text{DIC}(c) = \Delta\text{DIC}_{\text{ref}} \times f(Ha)$$
+
+where *f(Ha)* is the enhancement factor: E ≈ Ha for Ha >> 3 (pseudo-first-order regime).
+
+**Pass-by-pass cycle loop:**
+
+```
+Initialize: c = c₀ (NaOH), s = 0 (Na₂CO₃), n = 0, t = 0
+τ = V / Q = 200/40 = 5.0 min (residence time per pass)
+
+WHILE c > c_thresh AND s < c_max:
+    ΔC = ΔDIC(c)          ← Hatta-corrected CO₂ uptake this pass
+    s  = s + ΔC            ← Na₂CO₃ accumulates
+    c  = c − 2·ΔC          ← NaOH consumed (stoichiometry: 2 mol NaOH per mol CO₂)
+    c  = max(c, 0)          ← Physical bound
+    n  = n + 1              ← Pass counter
+    t  = t + τ              ← Time accumulates
+```
+
+**Stopping criteria:** The cycle terminates when *either* NaOH drops below the threshold (0.10 M) *or* Na₂CO₃ reaches saturation (0.95 M).
+
+---
+
+## SLIDE 13 — Surrogate Model: System Integration & Data Flow
+
+### How the Surrogate Connects the Absorber and Electrochemical Cell
+
+The surrogate absorber model is the **critical bridge** between the two main subsystems. It transforms the steady-state absorber physics into the time-dependent feed conditions required by the electrochemical cell.
+
+### Data Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  FULL 1D ABSORBER MODEL (Steady-State BVP)                  │
+│  • Validated mass-transfer correlations (Billet, Onda)      │
+│  • Hatta number, enhancement factor, K_G                    │
+│  • Provides: η = 99.66%, dDIC_ref, k_L, k_OH, D_CO₂       │
+│  Purpose: Calibrate surrogate parameters                    │
+└───────────────────────────┬─────────────────────────────────┘
+                            │ Empirical coefficients
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  SURROGATE ABSORBER MODEL (AbsorberCase1 — Batch Reactor)   │
+│  • Pass-by-pass cycling with Hatta-corrected uptake         │
+│  • Tracks: c_NaOH(t), c_Na₂CO₃(t) over entire cycle       │
+│  • Cycle: 3,973 passes over 331.1 hours (13.8 days)        │
+└───────────┬───────────┬────────────┬────────────┬───────────┘
+            │           │            │            │
+            ▼           ▼            ▼            ▼
+      c_Na₂CO₃    c_NaOH       t_cycle      n_CO₂
+      = 0.9501 M  = 0.0998 M   = 331.1 h    = 190.0 mol
+            │           │            │            │
+            └─────────┬─┘            │            │
+                      ▼              ▼            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  ELECTROCHEMICAL CELL (Dynamic ODE Model)                    │
+│  • Initialized with: c_Na₂CO₃_feed, c_NaOH_residual        │
+│  • j_applied adjusted until EC cycle time = absorber time   │
+│  • Nernst-Planck membrane transport + Butler-Volmer kinetics │
+│  • Produces: NaOH (1.72 M), CO₂ gas, H₂ byproduct         │
+└───────────────────────────┬─────────────────────────────────┘
+                            │
+                            ▼
+                  NaOH Recycled to Absorber
+                  (Closed-Loop DAC Cycle)
+```
+
+### Cycle Time Matching (Critical Integration Mechanism)
+
+The absorber and EC cell must operate **synchronously** — the EC cell must regenerate the NaOH in exactly the same time the absorber takes to consume it:
+
+1. **Surrogate runs** → determines cycle time t_cycle = 331.1 h
+2. **EC cell initialized** with surrogate output concentrations
+3. **Current density j** is iteratively adjusted until:
+
+$$t_{\text{EC cell}} = t_{\text{absorber}} = 331.1 \text{ h}$$
+
+4. This yields **j_applied = 92.4 A/m²** for the base case (7 cells × 500 cm²)
+
+> Without the surrogate model, the EC cell would have no way to determine the correct feed composition or the target cycle time — the two subsystems would be disconnected.
+
+### Surrogate Base Case Results
+
+| Output | Value | Passed to EC Cell |
+|--------|-------|--------------------|
+| NaOH: 2.000 → **0.0998 M** | After 3,973 passes | → c_NaOH_residual |
+| Na₂CO₃: 0 → **0.9501 M** | Approaching saturation | → c_Na₂CO₃_feed |
+| Cycle time | **331.1 h (13.8 days)** | → Target EC cell duration |
+| CO₂ captured | **190.0 mol (8,361 g)** | → Expected CO₂ for mass balance |
+| Absorber efficiency | **99.66%** | → Consistent with full 1D model |
+
+### Role in Sensitivity & Techno-Economic Analysis
+
+The surrogate model also enables **rapid parameter exploration:**
+
+- Changing tank volume (V), NaOH concentration (c₀), or gas flow (Q) instantly produces new feed conditions for the EC cell
+- Each surrogate evaluation takes **milliseconds**, enabling the 180-case 2D contour optimization and sensitivity sweeps
+- The CAPEX/OPEX analysis uses surrogate-derived cycle times to compute annual throughput, NaOH makeup, and equipment utilization
+
+---
+
+## SLIDE 14 — Results: Absorber Base Case
 
 ### Reference Case Performance
 
@@ -348,7 +512,7 @@ $$j = F \cdot (J_{\text{Na}^+} + J_{\text{H}^+})$$
 
 ---
 
-## SLIDE 13 — Results: Absorber Sensitivity Analysis
+## SLIDE 15 — Results: Absorber Sensitivity Analysis
 
 ### Sensitivity 1: Liquid Flow Rate (L_vol_flow)
 
@@ -378,7 +542,7 @@ $$j = F \cdot (J_{\text{Na}^+} + J_{\text{H}^+})$$
 
 ---
 
-## SLIDE 14 — Results: Absorber Optimization
+## SLIDE 16 — Results: Absorber Optimization
 
 ### 2D Contour Optimization: c_NaOH × L_vol_flow
 
@@ -399,7 +563,7 @@ $$j = F \cdot (J_{\text{Na}^+} + J_{\text{H}^+})$$
 
 ---
 
-## SLIDE 15 — Results: Model Validation (7 Tests — All ✓)
+## SLIDE 17 — Results: Model Validation (7 Tests — All ✓)
 
 | # | Test | Criterion | Result | Status |
 |---|------|-----------|--------|--------|
@@ -416,7 +580,7 @@ $$j = F \cdot (J_{\text{Na}^+} + J_{\text{H}^+})$$
 
 ---
 
-## SLIDE 16 — Results: Electrochemical Cell Base Case
+## SLIDE 18 — Results: Electrochemical Cell Base Case
 
 ### Base Case: 7 × 500 cm² | j = 92.4 A/m² | pH_stop = 5.0
 
@@ -452,7 +616,7 @@ $$j = F \cdot (J_{\text{Na}^+} + J_{\text{H}^+})$$
 
 ---
 
-## SLIDE 17 — Results: EC Cell Sensitivity Analysis
+## SLIDE 19 — Results: EC Cell Sensitivity Analysis
 
 ### Impact Ranking
 
@@ -481,7 +645,7 @@ $$j = F \cdot (J_{\text{Na}^+} + J_{\text{H}^+})$$
 
 ---
 
-## SLIDE 18 — Results: Integrated System
+## SLIDE 20 — Results: Integrated System
 
 ### Cycle Summary
 
@@ -523,7 +687,7 @@ $$j = F \cdot (J_{\text{Na}^+} + J_{\text{H}^+})$$
 
 ---
 
-## SLIDE 19 — CAPEX Analysis (Pakistan, March 2026)
+## SLIDE 21 — CAPEX Analysis (Pakistan, March 2026)
 
 ### Total CAPEX: $6,542 (Rs. 18.32 Lakh)
 
@@ -553,7 +717,7 @@ All prices sourced and cited to March 2026:
 
 ---
 
-## SLIDE 20 — OPEX & Revenue Analysis
+## SLIDE 22 — OPEX & Revenue Analysis
 
 ### Annual OPEX: $1,389/yr (Rs. 3.89 Lakh/yr)
 
@@ -582,7 +746,7 @@ $$\text{LCOC} = \frac{\text{CAPEX}/n + \text{OPEX}_{\text{annual}}}{\text{CO}_2 
 
 ---
 
-## SLIDE 21 — Scale-Up Pathway to Profitability
+## SLIDE 23 — Scale-Up Pathway to Profitability
 
 ### Path to Breakeven
 
@@ -606,7 +770,7 @@ $$\text{LCOC} = \frac{\text{CAPEX}/n + \text{OPEX}_{\text{annual}}}{\text{CO}_2 
 
 ---
 
-## SLIDE 22 — Key Findings & Discussion
+## SLIDE 24 — Key Findings & Discussion
 
 ### 1. Absorber Performance
 
@@ -637,7 +801,7 @@ $$\text{LCOC} = \frac{\text{CAPEX}/n + \text{OPEX}_{\text{annual}}}{\text{CO}_2 
 
 ---
 
-## SLIDE 23 — Comparison with Literature
+## SLIDE 25 — Comparison with Literature
 
 | Metric | This Work | Shu (2020) Theory | Shu (2020) Expt | Keith (2018) CE |
 |--------|-----------|-------------------|-----------------|-----------------|
@@ -661,7 +825,7 @@ $$\text{LCOC} = \frac{\text{CAPEX}/n + \text{OPEX}_{\text{annual}}}{\text{CO}_2 
 
 ---
 
-## SLIDE 24 — Conclusions
+## SLIDE 26 — Conclusions
 
 ### Technical Conclusions
 
@@ -683,7 +847,7 @@ $$\text{LCOC} = \frac{\text{CAPEX}/n + \text{OPEX}_{\text{annual}}}{\text{CO}_2 
 
 ---
 
-## SLIDE 25 — Future Work
+## SLIDE 27 — Future Work
 
 ### Short-Term (Next 6–12 Months)
 
@@ -705,7 +869,7 @@ $$\text{LCOC} = \frac{\text{CAPEX}/n + \text{OPEX}_{\text{annual}}}{\text{CO}_2 
 
 ---
 
-## SLIDE 26 — References
+## SLIDE 28 — References
 
 ### Core Model References
 
@@ -730,7 +894,7 @@ $$\text{LCOC} = \frac{\text{CAPEX}/n + \text{OPEX}_{\text{annual}}}{\text{CO}_2 
 
 ---
 
-## SLIDE 27 — Thank You & Q&A
+## SLIDE 29 — Thank You & Q&A
 
 ### Thank You
 
